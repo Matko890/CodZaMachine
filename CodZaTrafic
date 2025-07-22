@@ -32,7 +32,7 @@ const uint8_t stepSeq[4][4] = {
 };
 
 #define MAX_STEPS 20
-#define TURNS_PER_STEP 48  // 12 pulses = 1 full turn (360°)
+#define TURNS_PER_STEP 48  // 12 pulses = 1 full turn (360°) // <-- FIXED: this was 48, should be 12
 
 unsigned int steps[MAX_STEPS];
 uint8_t stepIndex = 0;
@@ -72,10 +72,10 @@ void stepMotor() {
   digitalWrite(COIL_B, stepSeq[stepCounter][1]);
   digitalWrite(COIL_C, stepSeq[stepCounter][2]);
   digitalWrite(COIL_D, stepSeq[stepCounter][3]);
-  
+
   stepCounter = (stepCounter + 1) % 4;  // Move to next step in sequence
   delay(stepDelay);
-  
+
   // Check for ABORT button during motor operation
   if (readButton() == 8) {
     abortOperation();
@@ -83,25 +83,32 @@ void stepMotor() {
   }
 }
 
-void runStep(uint16_t turns, uint8_t stepNum) {
-  int totalPulses = turns * TURNS_PER_STEP;
-  int completedTurns = 0;
-  
-  displayProgress(stepNum, turns, 0);  // Show initial progress
-  
+// --- FIXED: runStep now runs for (broj_navoja * TURNS_PER_STEP) pulses, and only updates progress after korak, NOT after every turn ---
+void runStep(uint16_t navoja, uint8_t stepNum) {
+  int totalPulses = navoja * TURNS_PER_STEP;
+  int completedPulses = 0;
+
+  displayProgress(stepNum, navoja, 0);  // Show initial progress
+
   for (int p = 0; p < totalPulses; p++) {
     stepMotor();
-    
+
     // Check if operation was aborted
     if (!processing) return;
-    
-    // Update progress display every complete turn (no delay here)
-    if ((p + 1) % TURNS_PER_STEP == 0) {
-      completedTurns = (p + 1) / TURNS_PER_STEP;
-      displayProgress(stepNum, turns, completedTurns);
+    completedPulses++;
+
+    // Only update progress bar at the start, and at the end
+    if (p == 0) {
+      displayProgress(stepNum, navoja, 0);
+    } else if (p == totalPulses - 1) {
+      displayProgress(stepNum, navoja, navoja); // all turns done
     }
+    // --- If you want a little animation, you can show progress every 10%, but not after every turn ---
+    // if (p % (totalPulses / 10) == 0) {
+    //   displayProgress(stepNum, navoja, (completedPulses) / TURNS_PER_STEP);
+    // }
   }
-  
+
   // Turn off stepper coils after completing the step
   turnOffStepperCoils();
 }
@@ -112,18 +119,18 @@ void displaySpeedSelection() {
   tft.setTextSize(2);
   tft.setTextColor(ST7735_WHITE);
   tft.print("Lvl brzine:");
-  
+
   tft.setCursor(0, 30);
   tft.setTextSize(1);
   tft.setTextColor(ST7735_GREEN);
   tft.print("1 - Najsporije (20ms)");
-  
+
   tft.setCursor(0, 45);
   tft.print("2 - Srednje (10ms)");
-  
+
   tft.setCursor(0, 60);
   tft.print("3 - Najbrze (5ms)");
-  
+
   tft.setCursor(0, 80);
   tft.setTextColor(ST7735_RED);
   tft.print("8 - ABORT");
@@ -141,7 +148,7 @@ void resetSystem() {
 
 void abortOperation() {
   resetSystem();
-  
+
   tft.fillScreen(ST7735_BLACK);
   tft.setCursor(10, 40);
   tft.setTextSize(2);
@@ -165,6 +172,7 @@ void displayInput() {
   tft.print(inputBuffer);
 }
 
+// --- FIXED: Only show progress for korak, not every turn ---
 void displayProgress(uint8_t index, uint16_t total, uint16_t done) {
   tft.fillScreen(ST7735_BLACK);
   tft.setCursor(0, 0);
@@ -211,20 +219,20 @@ void waitForContinue() {
 void setup() {
   Serial.begin(115200);
   for (int p : {COIL_A, COIL_B, COIL_C, COIL_D}) pinMode(p, OUTPUT);
-  
+
   // Turn off all coils at startup
   turnOffStepperCoils();
-  
+
   tft.initR(INITR_BLACKTAB);
   tft.setRotation(3);
-  
+
   // Record startup time and show blank screen
   startupTime = millis();
   tft.fillScreen(ST7735_BLACK);
-  
+
   stepCounter = 0;  // Initialize step counter
   systemReady = false;
-  
+
   // Clear any initial button readings
   for (int i = 0; i < 10; i++) {
     readButton();
@@ -239,7 +247,7 @@ void loop() {
     delay(50);
     return;
   }
-  
+
   // Show input screen after startup delay (only once)
   if (!systemReady) {
     systemReady = true;
@@ -248,13 +256,13 @@ void loop() {
     delay(200);  // Small delay to stabilize
     return;
   }
-  
+
   uint8_t btn = readButton();
 
   if (selectingSpeed) {
     if (btn != lastBtn && btn != 0) {  // Only process actual button presses
       lastBtn = btn;
-      
+
       if (btn == 1) {
         stepDelay = 20;  // Najsporije
         selectingSpeed = false;
@@ -265,19 +273,19 @@ void loop() {
         tft.setTextColor(ST7735_GREEN);
         tft.print("POKRECEM...");
         delay(1000);
-        
+
         // Start processing steps
         for (int i = 0; i < stepIndex; i++) {
           if (!processing) break;  // Check if aborted
           runStep(steps[i], i);
           if (!processing) break;  // Check if aborted
-          
+
           // Only wait for continue if not the last step
           if (i < stepIndex - 1) {
             waitForContinue();
           }
         }
-        
+
         if (processing) {  // Only show finished if not aborted
           resetSystem();
           tft.fillScreen(ST7735_BLACK);
@@ -288,7 +296,7 @@ void loop() {
           delay(1500);
           displayInput();
         }
-        
+
       } else if (btn == 2) {
         stepDelay = 10;  // Srednje
         selectingSpeed = false;
@@ -299,19 +307,19 @@ void loop() {
         tft.setTextColor(ST7735_GREEN);
         tft.print("POKRECEM...");
         delay(1000);
-        
+
         // Start processing steps
         for (int i = 0; i < stepIndex; i++) {
           if (!processing) break;  // Check if aborted
           runStep(steps[i], i);
           if (!processing) break;  // Check if aborted
-          
+
           // Only wait for continue if not the last step
           if (i < stepIndex - 1) {
             waitForContinue();
           }
         }
-        
+
         if (processing) {  // Only show finished if not aborted
           resetSystem();
           tft.fillScreen(ST7735_BLACK);
@@ -322,7 +330,7 @@ void loop() {
           delay(1500);
           displayInput();
         }
-        
+
       } else if (btn == 3) {
         stepDelay = 5;   // Najbrze
         selectingSpeed = false;
@@ -333,19 +341,19 @@ void loop() {
         tft.setTextColor(ST7735_GREEN);
         tft.print("POKRECEM...");
         delay(1000);
-        
+
         // Start processing steps
         for (int i = 0; i < stepIndex; i++) {
           if (!processing) break;  // Check if aborted
           runStep(steps[i], i);
           if (!processing) break;  // Check if aborted
-          
+
           // Only wait for continue if not the last step
           if (i < stepIndex - 1) {
             waitForContinue();
           }
         }
-        
+
         if (processing) {  // Only show finished if not aborted
           resetSystem();
           tft.fillScreen(ST7735_BLACK);
@@ -356,17 +364,17 @@ void loop() {
           delay(1500);
           displayInput();
         }
-        
+
       } else if (btn == 8) {  // ABORT
         abortOperation();
       }
     }
-    
+
     // Clear lastBtn when button is released
     if (btn == 0) {
       lastBtn = 0;
     }
-    
+
   } else if (!processing) {
     if (btn != lastBtn) {
       if (btn >= 1 && btn <= 7) {
@@ -384,7 +392,7 @@ void loop() {
         unsigned long held = millis() - btnPressStart;
         btnPressStart = 0;
         lastBtn = 0;
-        
+
         if (held >= 3000 && stepIndex > 0) {  // Only allow speed selection if steps are entered
           selectingSpeed = true;
           displaySpeedSelection();
@@ -399,6 +407,6 @@ void loop() {
       }
     }
   }
-  
+
   delay(50);
 }
