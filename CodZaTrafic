@@ -8,6 +8,7 @@
 // 7. Fixed delay between turns
 // 8. Fixed reset after abort/finish
 // 9. Turn off MOSFETs when finished
+// 10. Each step completes ALL its turns (broj navoja * TURNS_PER_STEP) before pausing
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
@@ -89,6 +90,7 @@ void runStep(uint16_t turns, uint8_t stepNum) {
   
   displayProgress(stepNum, turns, 0);  // Show initial progress
   
+  // Complete ALL turns for this step without any pauses
   for (int p = 0; p < totalPulses; p++) {
     stepMotor();
     
@@ -102,8 +104,11 @@ void runStep(uint16_t turns, uint8_t stepNum) {
     }
   }
   
-  // Turn off stepper coils after completing the step
+  // Turn off stepper coils after completing ALL turns for this step
   turnOffStepperCoils();
+  
+  // Show that this step is complete and ready for next step
+  displayProgress(stepNum, turns, turns);
 }
 
 void displaySpeedSelection() {
@@ -183,13 +188,16 @@ void displayProgress(uint8_t index, uint16_t total, uint16_t done) {
   tft.drawRect(0, 40, 120, 10, ST7735_WHITE);
   tft.fillRect(0, 40, barWidth, 10, ST7735_GREEN);
 
-  if (done < total) {  // Only show "continue" message while running
+  if (done < total) {  // Only show "working" message while running
     tft.setCursor(0, 60);
     tft.setTextColor(ST7735_YELLOW);
     tft.print("Radi...");
-  } else {  // Show continue message when step is done
+  } else {  // Show continue message when ALL turns for this step are done
     tft.setCursor(0, 60);
     tft.setTextColor(ST7735_GREEN);
+    tft.print("Korak zavrsen!");
+    tft.setCursor(0, 75);
+    tft.setTextColor(ST7735_CYAN);
     tft.print("Zeleni za dalje...");
   }
 }
@@ -266,9 +274,10 @@ void loop() {
         tft.print("POKRECEM...");
         delay(1000);
         
-        // Start processing steps
+        // Start processing steps - each step will complete ALL its turns before pausing
         for (int i = 0; i < stepIndex; i++) {
           if (!processing) break;  // Check if aborted
+          // This will complete (steps[i] * TURNS_PER_STEP) pulses without pausing
           runStep(steps[i], i);
           if (!processing) break;  // Check if aborted
           
@@ -300,9 +309,10 @@ void loop() {
         tft.print("POKRECEM...");
         delay(1000);
         
-        // Start processing steps
+        // Start processing steps - each step will complete ALL its turns before pausing
         for (int i = 0; i < stepIndex; i++) {
           if (!processing) break;  // Check if aborted
+          // This will complete (steps[i] * TURNS_PER_STEP) pulses without pausing
           runStep(steps[i], i);
           if (!processing) break;  // Check if aborted
           
@@ -334,9 +344,10 @@ void loop() {
         tft.print("POKRECEM...");
         delay(1000);
         
-        // Start processing steps
+        // Start processing steps - each step will complete ALL its turns before pausing
         for (int i = 0; i < stepIndex; i++) {
           if (!processing) break;  // Check if aborted
+          // This will complete (steps[i] * TURNS_PER_STEP) pulses without pausing
           runStep(steps[i], i);
           if (!processing) break;  // Check if aborted
           
