@@ -1,0 +1,404 @@
+// Fixes:
+// 1. CONTINUE hold and press logic made reliable
+// 2. Added progress display for each step
+// 3. Stepper waits for CONTINUE between steps
+// 4. Changed to 12 pulses per 360° turn
+// 5. Removed delay between turns
+// 6. Fixed startup random button detection
+// 7. Fixed delay between turns
+// 8. Fixed reset after abort/finish
+// 9. Turn off MOSFETs when finished
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <SPI.h>
+
+// TFT pins
+#define TFT_CS   D8
+#define TFT_DC   D4
+#define TFT_RST  D6
+
+// Stepper pins
+#define COIL_A   D0
+#define COIL_B   D1
+#define COIL_C   D2
+#define COIL_D   D3
+
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+const int thresh[8] = {138, 255, 419, 607, 773, 887, 954, 990};
+const uint8_t stepSeq[4][4] = {
+  {1, 0, 0, 1}, {1, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 1, 1}
+};
+
+#define MAX_STEPS 20
+#define TURNS_PER_STEP 48  // 12 pulses = 1 full turn (360°)
+
+unsigned int steps[MAX_STEPS];
+uint8_t stepIndex = 0;
+String inputBuffer = "";
+unsigned long btnPressStart = 0;
+bool processing = false;
+bool selectingSpeed = false;
+uint8_t stepDelay = 10;  // Variable step delay
+uint8_t lastBtn = 0;
+unsigned long startupTime = 0;  // Track startup time
+int stepCounter = 0;  // Track individual steps within a turn
+bool systemReady = false;  // Track if system is ready for input
+
+uint8_t readButton() {
+  int v = analogRead(A0);
+  if (v < thresh[0]) return 1;
+  else if (v < thresh[1]) return 2;
+  else if (v < thresh[2]) return 3;
+  else if (v < thresh[3]) return 4;
+  else if (v < thresh[4]) return 5;
+  else if (v < thresh[5]) return 6;
+  else if (v < thresh[6]) return 7;
+  else if (v < thresh[7]) return 8; // ABORT
+  else if (v <= 1023)      return 9; // CONTINUE
+  return 0;
+}
+
+void turnOffStepperCoils() {
+  digitalWrite(COIL_A, LOW);
+  digitalWrite(COIL_B, LOW);
+  digitalWrite(COIL_C, LOW);
+  digitalWrite(COIL_D, LOW);
+}
+
+void stepMotor() {
+  digitalWrite(COIL_A, stepSeq[stepCounter][0]);
+  digitalWrite(COIL_B, stepSeq[stepCounter][1]);
+  digitalWrite(COIL_C, stepSeq[stepCounter][2]);
+  digitalWrite(COIL_D, stepSeq[stepCounter][3]);
+  
+  stepCounter = (stepCounter + 1) % 4;  // Move to next step in sequence
+  delay(stepDelay);
+  
+  // Check for ABORT button during motor operation
+  if (readButton() == 8) {
+    abortOperation();
+    return;
+  }
+}
+
+void runStep(uint16_t turns, uint8_t stepNum) {
+  int totalPulses = turns * TURNS_PER_STEP;
+  int completedTurns = 0;
+  
+  displayProgress(stepNum, turns, 0);  // Show initial progress
+  
+  for (int p = 0; p < totalPulses; p++) {
+    stepMotor();
+    
+    // Check if operation was aborted
+    if (!processing) return;
+    
+    // Update progress display every complete turn (no delay here)
+    if ((p + 1) % TURNS_PER_STEP == 0) {
+      completedTurns = (p + 1) / TURNS_PER_STEP;
+      displayProgress(stepNum, turns, completedTurns);
+    }
+  }
+  
+  // Turn off stepper coils after completing the step
+  turnOffStepperCoils();
+}
+
+void displaySpeedSelection() {
+  tft.fillScreen(ST7735_BLACK);
+  tft.setCursor(0, 0);
+  tft.setTextSize(2);
+  tft.setTextColor(ST7735_WHITE);
+  tft.print("Lvl brzine:");
+  
+  tft.setCursor(0, 30);
+  tft.setTextSize(1);
+  tft.setTextColor(ST7735_GREEN);
+  tft.print("1 - Najsporije (20ms)");
+  
+  tft.setCursor(0, 45);
+  tft.print("2 - Srednje (10ms)");
+  
+  tft.setCursor(0, 60);
+  tft.print("3 - Najbrze (5ms)");
+  
+  tft.setCursor(0, 80);
+  tft.setTextColor(ST7735_RED);
+  tft.print("8 - ABORT");
+}
+
+void resetSystem() {
+  processing = false;
+  selectingSpeed = false;
+  stepIndex = 0;
+  inputBuffer = "";
+  btnPressStart = 0;
+  lastBtn = 0;
+  turnOffStepperCoils();
+}
+
+void abortOperation() {
+  resetSystem();
+  
+  tft.fillScreen(ST7735_BLACK);
+  tft.setCursor(10, 40);
+  tft.setTextSize(2);
+  tft.setTextColor(ST7735_RED);
+  tft.print("PREKINUTO!");
+  delay(1500);
+  displayInput();
+}
+
+void displayInput() {
+  tft.fillScreen(ST7735_BLACK);
+  tft.setCursor(0, 0);
+  tft.setTextSize(2);
+  tft.setTextColor(ST7735_WHITE);
+  tft.print("broj navoja za");
+  tft.setCursor(0, 30);
+  tft.print("korak ");
+  tft.print(stepIndex + 1);
+  tft.setCursor(0, 60);
+  tft.setTextColor(ST7735_YELLOW);
+  tft.print(inputBuffer);
+}
+
+void displayProgress(uint8_t index, uint16_t total, uint16_t done) {
+  tft.fillScreen(ST7735_BLACK);
+  tft.setCursor(0, 0);
+  tft.setTextSize(1);
+  tft.setTextColor(ST7735_WHITE);
+  tft.print("Korak "); tft.print(index + 1); tft.print(" od "); tft.print(stepIndex);
+
+  tft.setCursor(0, 15);
+  tft.print("Namota: "); tft.print(done); tft.print(" / "); tft.print(total);
+
+  // Calculate progress bar width
+  int barWidth = 0;
+  if (total > 0) {
+    barWidth = (done * 120) / total;
+  }
+  tft.drawRect(0, 40, 120, 10, ST7735_WHITE);
+  tft.fillRect(0, 40, barWidth, 10, ST7735_GREEN);
+
+  if (done < total) {  // Only show "continue" message while running
+    tft.setCursor(0, 60);
+    tft.setTextColor(ST7735_YELLOW);
+    tft.print("Radi...");
+  } else {  // Show continue message when step is done
+    tft.setCursor(0, 60);
+    tft.setTextColor(ST7735_GREEN);
+    tft.print("Zeleni za dalje...");
+  }
+}
+
+void waitForContinue() {
+  while (true) {
+    uint8_t btn = readButton();
+    if (btn == 9) break;
+    if (btn == 8) {  // Check for ABORT
+      abortOperation();
+      return;
+    }
+    delay(50);
+  }
+  while (readButton() == 9) delay(50); // wait for release
+  delay(100);  // Reduced delay
+}
+
+void setup() {
+  Serial.begin(115200);
+  for (int p : {COIL_A, COIL_B, COIL_C, COIL_D}) pinMode(p, OUTPUT);
+  
+  // Turn off all coils at startup
+  turnOffStepperCoils();
+  
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(3);
+  
+  // Record startup time and show blank screen
+  startupTime = millis();
+  tft.fillScreen(ST7735_BLACK);
+  
+  stepCounter = 0;  // Initialize step counter
+  systemReady = false;
+  
+  // Clear any initial button readings
+  for (int i = 0; i < 10; i++) {
+    readButton();
+    delay(100);
+  }
+}
+
+void loop() {
+  // Handle startup delay - ignore buttons and clear readings for first 3 seconds
+  if (millis() - startupTime < 3000) {
+    readButton();  // Clear button readings
+    delay(50);
+    return;
+  }
+  
+  // Show input screen after startup delay (only once)
+  if (!systemReady) {
+    systemReady = true;
+    resetSystem();  // Make sure everything is clean
+    displayInput();
+    delay(200);  // Small delay to stabilize
+    return;
+  }
+  
+  uint8_t btn = readButton();
+
+  if (selectingSpeed) {
+    if (btn != lastBtn && btn != 0) {  // Only process actual button presses
+      lastBtn = btn;
+      
+      if (btn == 1) {
+        stepDelay = 20;  // Najsporije
+        selectingSpeed = false;
+        processing = true;
+        tft.fillScreen(ST7735_BLACK);
+        tft.setCursor(10, 40);
+        tft.setTextSize(2);
+        tft.setTextColor(ST7735_GREEN);
+        tft.print("POKRECEM...");
+        delay(1000);
+        
+        // Start processing steps
+        for (int i = 0; i < stepIndex; i++) {
+          if (!processing) break;  // Check if aborted
+          runStep(steps[i], i);
+          if (!processing) break;  // Check if aborted
+          
+          // Only wait for continue if not the last step
+          if (i < stepIndex - 1) {
+            waitForContinue();
+          }
+        }
+        
+        if (processing) {  // Only show finished if not aborted
+          resetSystem();
+          tft.fillScreen(ST7735_BLACK);
+          tft.setCursor(10, 40);
+          tft.setTextSize(2);
+          tft.setTextColor(ST7735_GREEN);
+          tft.print("ZAVRSENO");
+          delay(1500);
+          displayInput();
+        }
+        
+      } else if (btn == 2) {
+        stepDelay = 10;  // Srednje
+        selectingSpeed = false;
+        processing = true;
+        tft.fillScreen(ST7735_BLACK);
+        tft.setCursor(10, 40);
+        tft.setTextSize(2);
+        tft.setTextColor(ST7735_GREEN);
+        tft.print("POKRECEM...");
+        delay(1000);
+        
+        // Start processing steps
+        for (int i = 0; i < stepIndex; i++) {
+          if (!processing) break;  // Check if aborted
+          runStep(steps[i], i);
+          if (!processing) break;  // Check if aborted
+          
+          // Only wait for continue if not the last step
+          if (i < stepIndex - 1) {
+            waitForContinue();
+          }
+        }
+        
+        if (processing) {  // Only show finished if not aborted
+          resetSystem();
+          tft.fillScreen(ST7735_BLACK);
+          tft.setCursor(10, 40);
+          tft.setTextSize(2);
+          tft.setTextColor(ST7735_GREEN);
+          tft.print("ZAVRSENO");
+          delay(1500);
+          displayInput();
+        }
+        
+      } else if (btn == 3) {
+        stepDelay = 5;   // Najbrze
+        selectingSpeed = false;
+        processing = true;
+        tft.fillScreen(ST7735_BLACK);
+        tft.setCursor(10, 40);
+        tft.setTextSize(2);
+        tft.setTextColor(ST7735_GREEN);
+        tft.print("POKRECEM...");
+        delay(1000);
+        
+        // Start processing steps
+        for (int i = 0; i < stepIndex; i++) {
+          if (!processing) break;  // Check if aborted
+          runStep(steps[i], i);
+          if (!processing) break;  // Check if aborted
+          
+          // Only wait for continue if not the last step
+          if (i < stepIndex - 1) {
+            waitForContinue();
+          }
+        }
+        
+        if (processing) {  // Only show finished if not aborted
+          resetSystem();
+          tft.fillScreen(ST7735_BLACK);
+          tft.setCursor(10, 40);
+          tft.setTextSize(2);
+          tft.setTextColor(ST7735_GREEN);
+          tft.print("ZAVRSENO");
+          delay(1500);
+          displayInput();
+        }
+        
+      } else if (btn == 8) {  // ABORT
+        abortOperation();
+      }
+    }
+    
+    // Clear lastBtn when button is released
+    if (btn == 0) {
+      lastBtn = 0;
+    }
+    
+  } else if (!processing) {
+    if (btn != lastBtn) {
+      if (btn >= 1 && btn <= 7) {
+        inputBuffer += String(btn);
+        if (inputBuffer.length() > 5) inputBuffer = "";
+        displayInput();
+        lastBtn = btn;
+      } else if (btn == 8) {  // ABORT
+        abortOperation();
+        lastBtn = btn;
+      } else if (btn == 9) {
+        if (btnPressStart == 0) btnPressStart = millis();
+        lastBtn = btn;
+      } else if (btn == 0 && lastBtn == 9 && btnPressStart > 0) {
+        unsigned long held = millis() - btnPressStart;
+        btnPressStart = 0;
+        lastBtn = 0;
+        
+        if (held >= 3000 && stepIndex > 0) {  // Only allow speed selection if steps are entered
+          selectingSpeed = true;
+          displaySpeedSelection();
+        } else if (held < 3000 && inputBuffer.length() > 0 && stepIndex < MAX_STEPS) {
+          steps[stepIndex++] = inputBuffer.toInt();
+          inputBuffer = "";
+          displayInput();
+        }
+      } else if (btn == 0) {
+        lastBtn = 0;
+        btnPressStart = 0;
+      }
+    }
+  }
+  
+  delay(50);
+}
