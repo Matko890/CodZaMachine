@@ -113,27 +113,34 @@ void runStep(uint16_t navoja, uint8_t stepNum) {
   turnOffStepperCoils();
 }
 
+void drawCenteredText(const char* text, int y, uint16_t color, uint8_t size) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.setTextSize(size);
+  tft.setTextColor(color);
+  tft.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
+  int x = (tft.width() - w) / 2;
+  tft.setCursor(x, y);
+  tft.print(text);
+}
+
+void drawIcon(int x, int y, uint16_t color) {
+  // Simple circle icon for demonstration
+  tft.fillCircle(x, y, 10, color);
+  tft.drawCircle(x, y, 12, ST7735_WHITE);
+}
+
 void displaySpeedSelection() {
   tft.fillScreen(ST7735_BLACK);
-  tft.setCursor(0, 0);
-  tft.setTextSize(2);
-  tft.setTextColor(ST7735_WHITE);
-  tft.print("Lvl brzine:");
+  drawIcon(tft.width()/2, 18, ST7735_CYAN);
+  drawCenteredText("Izbor brzine", 35, ST7735_WHITE, 2);
 
-  tft.setCursor(0, 30);
   tft.setTextSize(1);
   tft.setTextColor(ST7735_GREEN);
-  tft.print("1 - Najsporije (20ms)");
-
-  tft.setCursor(0, 45);
-  tft.print("2 - Srednje (10ms)");
-
-  tft.setCursor(0, 60);
-  tft.print("3 - Najbrze (5ms)");
-
-  tft.setCursor(0, 80);
-  tft.setTextColor(ST7735_RED);
-  tft.print("8 - ABORT");
+  drawCenteredText("1 - Najsporije (20ms)", 65, ST7735_GREEN, 1);
+  drawCenteredText("2 - Srednje (10ms)", 80, ST7735_YELLOW, 1);
+  drawCenteredText("3 - Najbrze (5ms)", 95, ST7735_RED, 1);
+  drawCenteredText("8 - ABORT", 115, ST7735_RED, 1);
 }
 
 void resetSystem() {
@@ -148,57 +155,43 @@ void resetSystem() {
 
 void abortOperation() {
   resetSystem();
-
   tft.fillScreen(ST7735_BLACK);
-  tft.setCursor(10, 40);
-  tft.setTextSize(2);
-  tft.setTextColor(ST7735_RED);
-  tft.print("PREKINUTO!");
+  drawIcon(tft.width()/2, 40, ST7735_RED);
+  drawCenteredText("PREKINUTO!", 70, ST7735_RED, 2);
   delay(1500);
   displayInput();
 }
 
 void displayInput() {
   tft.fillScreen(ST7735_BLACK);
-  tft.setCursor(0, 0);
+  drawIcon(tft.width()/2, 18, ST7735_YELLOW);
+  drawCenteredText("Broj navoja za", 35, ST7735_WHITE, 2);
+  drawCenteredText((String("Korak ") + String(stepIndex + 1)).c_str(), 60, ST7735_CYAN, 2);
+  tft.drawRect(10, 95, tft.width()-20, 30, ST7735_YELLOW);
   tft.setTextSize(2);
-  tft.setTextColor(ST7735_WHITE);
-  tft.print("broj navoja za");
-  tft.setCursor(0, 30);
-  tft.print("korak ");
-  tft.print(stepIndex + 1);
-  tft.setCursor(0, 60);
   tft.setTextColor(ST7735_YELLOW);
+  int16_t x1, y1; uint16_t w, h;
+  tft.getTextBounds(inputBuffer.c_str(), 0, 0, &x1, &y1, &w, &h);
+  int x = (tft.width() - w) / 2;
+  tft.setCursor(x, 105);
   tft.print(inputBuffer);
 }
 
 // --- FIXED: Only show progress for korak, not every turn ---
 void displayProgress(uint8_t index, uint16_t total, uint16_t done) {
   tft.fillScreen(ST7735_BLACK);
-  tft.setCursor(0, 0);
-  tft.setTextSize(1);
-  tft.setTextColor(ST7735_WHITE);
-  tft.print("Korak "); tft.print(index + 1); tft.print(" od "); tft.print(stepIndex);
-
-  tft.setCursor(0, 15);
-  tft.print("Namota: "); tft.print(done); tft.print(" / "); tft.print(total);
-
-  // Calculate progress bar width
-  int barWidth = 0;
-  if (total > 0) {
-    barWidth = (done * 120) / total;
-  }
-  tft.drawRect(0, 40, 120, 10, ST7735_WHITE);
-  tft.fillRect(0, 40, barWidth, 10, ST7735_GREEN);
-
-  if (done < total) {  // Only show "continue" message while running
-    tft.setCursor(0, 60);
-    tft.setTextColor(ST7735_YELLOW);
-    tft.print("Radi...");
-  } else {  // Show continue message when step is done
-    tft.setCursor(0, 60);
-    tft.setTextColor(ST7735_GREEN);
-    tft.print("Zeleni za dalje...");
+  drawIcon(tft.width()/2, 18, ST7735_GREEN);
+  drawCenteredText((String("Korak ") + String(index + 1) + " od " + String(stepIndex)).c_str(), 35, ST7735_WHITE, 1);
+  drawCenteredText((String("Namota: ") + String(done) + " / " + String(total)).c_str(), 55, ST7735_YELLOW, 1);
+  // Progress bar
+  int barX = 20, barY = 80, barW = tft.width()-40, barH = 15;
+  tft.drawRect(barX, barY, barW, barH, ST7735_WHITE);
+  int fillW = (total > 0) ? ((done * barW) / total) : 0;
+  tft.fillRect(barX, barY, fillW, barH, ST7735_GREEN);
+  if (done < total) {
+    drawCenteredText("Radi...", 105, ST7735_CYAN, 1);
+  } else {
+    drawCenteredText("Zeleni za dalje...", 105, ST7735_GREEN, 1);
   }
 }
 
@@ -224,7 +217,7 @@ void setup() {
   turnOffStepperCoils();
 
   tft.initR(INITR_BLACKTAB);
-  tft.setRotation(3);
+  tft.setRotation(4);
 
   // Record startup time and show blank screen
   startupTime = millis();
