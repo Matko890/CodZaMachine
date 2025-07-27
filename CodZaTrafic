@@ -1,13 +1,7 @@
-// Fixes:
-// 1. CONTINUE hold and press logic made reliable
-// 2. Added progress display for each step
-// 3. Stepper waits for CONTINUE between steps
-// 4. Changed to 12 pulses per 360° turn
-// 5. Removed delay between turns
-// 6. Fixed startup random button detection
-// 7. Fixed delay between turns
 // 8. Fixed reset after abort/finish
 // 9. Turn off MOSFETs when finished
+// 10. Improved GUI with vertical layout, better colors, and clean design
+// 11. Added mass manufacturing mode for repeated transformer winding
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
@@ -16,7 +10,6 @@
 // TFT pins
 #define TFT_CS   D8
 #define TFT_DC   D4
-#define TFT_RST  D6
 
 // Stepper pins
 #define COIL_A   D0
@@ -24,7 +17,13 @@
 #define COIL_C   D2
 #define COIL_D   D3
 
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, -1);
+
+// Simple color palette - Orange, Black, White only
+#define COLOR_BG       ST7735_WHITE     // White background
+#define COLOR_PRIMARY  ST7735_ORANGE         // Dark Orange
+#define COLOR_SECONDARY ST7735_BLACK    // Black
+#define COLOR_TEXT     ST7735_WHITE     // White text
 
 const int thresh[8] = {138, 255, 419, 607, 773, 887, 954, 990};
 const uint8_t stepSeq[4][4] = {
@@ -40,11 +39,47 @@ String inputBuffer = "";
 unsigned long btnPressStart = 0;
 bool processing = false;
 bool selectingSpeed = false;
+bool massManufacturing = false;  // New: Track if we're in mass manufacturing mode
+uint16_t transformerCount = 0;   // New: Count completed transformers
 uint8_t stepDelay = 10;  // Variable step delay
 uint8_t lastBtn = 0;
 unsigned long startupTime = 0;  // Track startup time
 int stepCounter = 0;  // Track individual steps within a turn
 bool systemReady = false;  // Track if system is ready for input
+
+// Helper function to draw a rounded rectangle
+void drawRoundedRect(int x, int y, int w, int h, int radius, uint16_t color) {
+  tft.fillRect(x + radius, y, w - 2 * radius, h, color);
+  tft.fillRect(x, y + radius, w, h - 2 * radius, color);
+  tft.fillCircle(x + radius, y + radius, radius, color);
+  tft.fillCircle(x + w - radius - 1, y + radius, radius, color);
+  tft.fillCircle(x + radius, y + h - radius - 1, radius, color);
+  tft.fillCircle(x + w - radius - 1, y + h - radius - 1, radius, color);
+}
+
+// Helper function to create a button-like rectangle with text
+void drawButton(int x, int y, int w, int h, String text, uint16_t bgColor, uint16_t textColor, bool pressed = false) {
+  int offset = pressed ? 2 : 0;
+  
+  // Shadow effect
+  if (!pressed) {
+    drawRoundedRect(x + 2, y + 2, w, h, 4, COLOR_SECONDARY);
+  }
+  
+  // Main button
+  drawRoundedRect(x + offset, y + offset, w, h, 4, bgColor);
+  
+  // Border
+  tft.drawRoundRect(x + offset, y + offset, w, h, 4, COLOR_SECONDARY);
+  
+  // Text
+  tft.setTextSize(1);
+  tft.setTextColor(textColor);
+  int textW = text.length() * 6;
+  int textH = 8;
+  tft.setCursor(x + offset + (w - textW) / 2, y + offset + (h - textH) / 2);
+  tft.print(text);
+}
 
 uint8_t readButton() {
   int v = analogRead(A0);
@@ -113,34 +148,20 @@ void runStep(uint16_t navoja, uint8_t stepNum) {
   turnOffStepperCoils();
 }
 
-void drawCenteredText(const char* text, int y, uint16_t color, uint8_t size) {
-  int16_t x1, y1;
-  uint16_t w, h;
-  tft.setTextSize(size);
-  tft.setTextColor(color);
-  tft.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
-  int x = (tft.width() - w) / 2;
-  tft.setCursor(x, y);
-  tft.print(text);
-}
-
-void drawIcon(int x, int y, uint16_t color) {
-  // Simple circle icon for demonstration
-  tft.fillCircle(x, y, 10, color);
-  tft.drawCircle(x, y, 12, ST7735_WHITE);
-}
-
 void displaySpeedSelection() {
-  tft.fillScreen(ST7735_BLACK);
-  drawIcon(tft.width()/2, 18, ST7735_CYAN);
-  drawCenteredText("Izbor brzine", 35, ST7735_WHITE, 2);
-
-  tft.setTextSize(1);
-  tft.setTextColor(ST7735_GREEN);
-  drawCenteredText("1 - Najsporije (20ms)", 65, ST7735_GREEN, 1);
-  drawCenteredText("2 - Srednje (10ms)", 80, ST7735_YELLOW, 1);
-  drawCenteredText("3 - Najbrze (5ms)", 95, ST7735_RED, 1);
-  drawCenteredText("8 - ABORT", 115, ST7735_RED, 1);
+  tft.fillScreen(COLOR_BG);
+  
+  // Header
+  drawRoundedRect(5, 10, 118, 30, 6, COLOR_PRIMARY);
+  tft.setCursor(25, 22);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("BRZINA");
+  
+  // Speed options with better styling
+  drawButton(10, 50, 108, 25, "1 - SPORIJE (20ms)", COLOR_PRIMARY, COLOR_TEXT);
+  drawButton(10, 80, 108, 25, "2 - SREDNJE (10ms)", COLOR_PRIMARY, COLOR_TEXT);
+  drawButton(10, 110, 108, 25, "3 - BRZE (5ms)", COLOR_PRIMARY, COLOR_TEXT);
 }
 
 void resetSystem() {
@@ -150,48 +171,162 @@ void resetSystem() {
   inputBuffer = "";
   btnPressStart = 0;
   lastBtn = 0;
+  massManufacturing = false;
+  transformerCount = 0;
   turnOffStepperCoils();
 }
 
 void abortOperation() {
   resetSystem();
-  tft.fillScreen(ST7735_BLACK);
-  drawIcon(tft.width()/2, 40, ST7735_RED);
-  drawCenteredText("PREKINUTO!", 70, ST7735_RED, 2);
+
+  tft.fillScreen(COLOR_BG);
+  
+  // Large abort message
+  drawRoundedRect(10, 40, 108, 60, 8, COLOR_SECONDARY);
+  tft.setCursor(20, 70);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("PREKINUTO!");
+  
   delay(1500);
   displayInput();
 }
 
 void displayInput() {
-  tft.fillScreen(ST7735_BLACK);
-  drawIcon(tft.width()/2, 18, ST7735_YELLOW);
-  drawCenteredText("Broj navoja za", 35, ST7735_WHITE, 2);
-  drawCenteredText((String("Korak ") + String(stepIndex + 1)).c_str(), 60, ST7735_CYAN, 2);
-  tft.drawRect(10, 95, tft.width()-20, 30, ST7735_YELLOW);
+  tft.fillScreen(COLOR_BG);
+  
+  // Header section
+  drawRoundedRect(5, 10, 118, 40, 6, COLOR_PRIMARY);
+  tft.setCursor(10, 18);
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("BROJ NAVOJA ZA");
+  tft.setCursor(25, 32);
   tft.setTextSize(2);
-  tft.setTextColor(ST7735_YELLOW);
-  int16_t x1, y1; uint16_t w, h;
-  tft.getTextBounds(inputBuffer.c_str(), 0, 0, &x1, &y1, &w, &h);
-  int x = (tft.width() - w) / 2;
-  tft.setCursor(x, 105);
-  tft.print(inputBuffer);
+  tft.print("KORAK ");
+  tft.print(stepIndex + 1);
+  
+  // Input display area
+  drawRoundedRect(10, 60, 108, 40, 6, COLOR_SECONDARY);
+  tft.setCursor(15, 70);
+  tft.setTextSize(3);
+  tft.setTextColor(COLOR_TEXT);
+  if (inputBuffer.length() > 0) {
+    tft.print(inputBuffer);
+  } else {
+    tft.setTextSize(1);
+    tft.setCursor(20, 78);
+    tft.print("Unesite broj...");
+  }
+  
+  // Instructions section
+  drawRoundedRect(10, 110, 108, 35, 4, COLOR_PRIMARY);
+  tft.setCursor(15, 118);
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("Kratko: Unos");
+  tft.setCursor(15, 130);
+  tft.print("Dugo: Start (1.5s)");
+  
+  // Steps counter
+  if (stepIndex > 0) {
+    drawRoundedRect(10, 150, 108, 20, 3, COLOR_SECONDARY);
+    tft.setCursor(15, 157);
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXT);
+    tft.print("Koraka: ");
+    tft.print(stepIndex);
+    tft.print(" / ");
+    tft.print(MAX_STEPS);
+  }
+}
+
+// New function to display completion and wait for next transformer
+void displayTransformerComplete() {
+  tft.fillScreen(COLOR_BG);
+  
+  // Header with completion message
+  drawRoundedRect(5, 10, 118, 40, 6, COLOR_PRIMARY);
+  tft.setCursor(15, 22);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("ZAVRSENO");
+  
+  // Transformer counter
+  drawRoundedRect(10, 60, 108, 30, 4, COLOR_SECONDARY);
+  tft.setCursor(15, 70);
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("Transformator #");
+  tft.print(transformerCount);
+  
+  // Instructions for next transformer
+  drawRoundedRect(10, 100, 108, 40, 4, COLOR_PRIMARY);
+  tft.setCursor(15, 108);
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("Novi transformator:");
+  tft.setCursor(15, 120);
+  tft.print("Zeleni - NASTAVI");
+  tft.setCursor(15, 132);
+  tft.print("Crveni - PREKINI");
 }
 
 // --- FIXED: Only show progress for korak, not every turn ---
 void displayProgress(uint8_t index, uint16_t total, uint16_t done) {
-  tft.fillScreen(ST7735_BLACK);
-  drawIcon(tft.width()/2, 18, ST7735_GREEN);
-  drawCenteredText((String("Korak ") + String(index + 1) + " od " + String(stepIndex)).c_str(), 35, ST7735_WHITE, 1);
-  drawCenteredText((String("Namota: ") + String(done) + " / " + String(total)).c_str(), 55, ST7735_YELLOW, 1);
-  // Progress bar
-  int barX = 20, barY = 80, barW = tft.width()-40, barH = 15;
-  tft.drawRect(barX, barY, barW, barH, ST7735_WHITE);
-  int fillW = (total > 0) ? ((done * barW) / total) : 0;
-  tft.fillRect(barX, barY, fillW, barH, ST7735_GREEN);
+  tft.fillScreen(COLOR_BG);
+  
+  // Header with step info
+  drawRoundedRect(5, 10, 118, 35, 6, COLOR_PRIMARY);
+  tft.setCursor(15, 18);
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("KORAK ");
+  tft.print(index + 1);
+  tft.print(" od ");
+  tft.print(stepIndex);
+  
+  tft.setCursor(15, 30);
+  tft.print("NAMOTA: ");
+  tft.print(done);
+  tft.print(" / ");
+  tft.print(total);
+  
+  // Progress bar background
+  drawRoundedRect(10, 55, 108, 20, 4, COLOR_SECONDARY);
+  
+  // Progress bar fill
+  int barWidth = 0;
+  if (total > 0) {
+    barWidth = (done * 104) / total;
+    if (barWidth > 0) {
+      drawRoundedRect(12, 57, barWidth, 16, 3, COLOR_PRIMARY);
+    }
+  }
+  
+  // Progress percentage
+  tft.setCursor(45, 85);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_SECONDARY);
+  int percent = (total > 0) ? (done * 100) / total : 0;
+  tft.print(percent);
+  tft.print("%");
+  
+  // Status message
   if (done < total) {
-    drawCenteredText("Radi...", 105, ST7735_CYAN, 1);
+    drawRoundedRect(10, 110, 108, 30, 4, COLOR_PRIMARY);
+    tft.setCursor(35, 123);
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXT);
+    tft.print("RADI...");
   } else {
-    drawCenteredText("Zeleni za dalje...", 105, ST7735_GREEN, 1);
+    drawRoundedRect(10, 110, 108, 30, 4, COLOR_PRIMARY);
+    tft.setCursor(30, 118);
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXT);
+    tft.print("GOTOVO!");
+    tft.setCursor(20, 128);
+    tft.print("Zeleni za dalje");
   }
 }
 
@@ -209,6 +344,39 @@ void waitForContinue() {
   delay(100);  // Reduced delay
 }
 
+// New function to handle mass manufacturing workflow
+void runManufacturingCycle() {
+  processing = true;
+  
+  // Starting animation
+  tft.fillScreen(COLOR_BG);
+  drawRoundedRect(10, 60, 108, 40, 8, COLOR_PRIMARY);
+  tft.setCursor(25, 78);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT);
+  tft.print("KRECEM...");
+  delay(1000);
+
+  // Start processing steps
+  for (int i = 0; i < stepIndex; i++) {
+    if (!processing) break;  // Check if aborted
+    runStep(steps[i], i);
+    if (!processing) break;  // Check if aborted
+
+    // Only wait for continue if not the last step
+    if (i < stepIndex - 1) {
+      waitForContinue();
+    }
+  }
+
+  if (processing) {  // Only increment counter if not aborted
+    transformerCount++;
+    processing = false;
+    massManufacturing = true;  // Enter mass manufacturing mode
+    displayTransformerComplete();
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   for (int p : {COIL_A, COIL_B, COIL_C, COIL_D}) pinMode(p, OUTPUT);
@@ -217,11 +385,11 @@ void setup() {
   turnOffStepperCoils();
 
   tft.initR(INITR_BLACKTAB);
-  tft.setRotation(4);
+  tft.setRotation(2);  // Changed to rotation 1
 
   // Record startup time and show blank screen
   startupTime = millis();
-  tft.fillScreen(ST7735_BLACK);
+  tft.fillScreen(COLOR_BG);
 
   stepCounter = 0;  // Initialize step counter
   systemReady = false;
@@ -252,6 +420,26 @@ void loop() {
 
   uint8_t btn = readButton();
 
+  // Handle mass manufacturing mode
+  if (massManufacturing) {
+    if (btn != lastBtn && btn != 0) {
+      lastBtn = btn;
+      
+      if (btn == 9) {  // Continue with next transformer
+        massManufacturing = false;
+        runManufacturingCycle();
+      } else if (btn == 8) {  // Abort manufacturing
+        abortOperation();
+      }
+    }
+    
+    // Clear lastBtn when button is released
+    if (btn == 0) {
+      lastBtn = 0;
+    }
+    return;
+  }
+
   if (selectingSpeed) {
     if (btn != lastBtn && btn != 0) {  // Only process actual button presses
       lastBtn = btn;
@@ -259,104 +447,17 @@ void loop() {
       if (btn == 1) {
         stepDelay = 20;  // Najsporije
         selectingSpeed = false;
-        processing = true;
-        tft.fillScreen(ST7735_BLACK);
-        tft.setCursor(10, 40);
-        tft.setTextSize(2);
-        tft.setTextColor(ST7735_GREEN);
-        tft.print("POKRECEM...");
-        delay(1000);
-
-        // Start processing steps
-        for (int i = 0; i < stepIndex; i++) {
-          if (!processing) break;  // Check if aborted
-          runStep(steps[i], i);
-          if (!processing) break;  // Check if aborted
-
-          // Only wait for continue if not the last step
-          if (i < stepIndex - 1) {
-            waitForContinue();
-          }
-        }
-
-        if (processing) {  // Only show finished if not aborted
-          resetSystem();
-          tft.fillScreen(ST7735_BLACK);
-          tft.setCursor(10, 40);
-          tft.setTextSize(2);
-          tft.setTextColor(ST7735_GREEN);
-          tft.print("ZAVRSENO");
-          delay(1500);
-          displayInput();
-        }
+        runManufacturingCycle();
 
       } else if (btn == 2) {
         stepDelay = 10;  // Srednje
         selectingSpeed = false;
-        processing = true;
-        tft.fillScreen(ST7735_BLACK);
-        tft.setCursor(10, 40);
-        tft.setTextSize(2);
-        tft.setTextColor(ST7735_GREEN);
-        tft.print("POKRECEM...");
-        delay(1000);
-
-        // Start processing steps
-        for (int i = 0; i < stepIndex; i++) {
-          if (!processing) break;  // Check if aborted
-          runStep(steps[i], i);
-          if (!processing) break;  // Check if aborted
-
-          // Only wait for continue if not the last step
-          if (i < stepIndex - 1) {
-            waitForContinue();
-          }
-        }
-
-        if (processing) {  // Only show finished if not aborted
-          resetSystem();
-          tft.fillScreen(ST7735_BLACK);
-          tft.setCursor(10, 40);
-          tft.setTextSize(2);
-          tft.setTextColor(ST7735_GREEN);
-          tft.print("ZAVRSENO");
-          delay(1500);
-          displayInput();
-        }
+        runManufacturingCycle();
 
       } else if (btn == 3) {
         stepDelay = 5;   // Najbrze
         selectingSpeed = false;
-        processing = true;
-        tft.fillScreen(ST7735_BLACK);
-        tft.setCursor(10, 40);
-        tft.setTextSize(2);
-        tft.setTextColor(ST7735_GREEN);
-        tft.print("POKRECEM...");
-        delay(1000);
-
-        // Start processing steps
-        for (int i = 0; i < stepIndex; i++) {
-          if (!processing) break;  // Check if aborted
-          runStep(steps[i], i);
-          if (!processing) break;  // Check if aborted
-
-          // Only wait for continue if not the last step
-          if (i < stepIndex - 1) {
-            waitForContinue();
-          }
-        }
-
-        if (processing) {  // Only show finished if not aborted
-          resetSystem();
-          tft.fillScreen(ST7735_BLACK);
-          tft.setCursor(10, 40);
-          tft.setTextSize(2);
-          tft.setTextColor(ST7735_GREEN);
-          tft.print("ZAVRSENO");
-          delay(1500);
-          displayInput();
-        }
+        runManufacturingCycle();
 
       } else if (btn == 8) {  // ABORT
         abortOperation();
@@ -386,10 +487,10 @@ void loop() {
         btnPressStart = 0;
         lastBtn = 0;
 
-        if (held >= 3000 && stepIndex > 0) {  // Only allow speed selection if steps are entered
+        if (held >= 1500 && stepIndex > 0) {  // Changed from 3000 to 1500ms
           selectingSpeed = true;
           displaySpeedSelection();
-        } else if (held < 3000 && inputBuffer.length() > 0 && stepIndex < MAX_STEPS) {
+        } else if (held < 1500 && inputBuffer.length() > 0 && stepIndex < MAX_STEPS) {
           steps[stepIndex++] = inputBuffer.toInt();
           inputBuffer = "";
           displayInput();
