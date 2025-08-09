@@ -43,7 +43,7 @@ const uint8_t stepSeq[4][4] = {
 };
 
 #define MAX_STEPS 20
-#define TURNS_PER_STEP 12  // 12 pulses = 1 full turn (360°)
+#define TURNS_PER_STEP 48  // 48 pulses = 1 full turn (360°)
 
 // Language system
 bool isEnglish = false;  // Start with Croatian
